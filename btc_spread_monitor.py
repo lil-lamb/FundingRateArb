@@ -8,20 +8,134 @@ SPOT_SYMBOL = 'BTC/USDT'
 FUTURES_SYMBOL = 'BTC/USDT:USDT'  # Binance perpetual futures
 UPPER_THRESHOLD = 50
 LOWER_THRESHOLD = -50
-REFRESH_INTERVAL = 60  # seconds
+REFRESH_INTERVAL = 5  # seconds
 
-# === Initialize exchanges ===
-binance_spot = ccxt.binance()
-binance_futures = ccxt.binance({
-    'enableRateLimit': True,
-    'options': {'defaultType': 'future'},
-    'sandbox': False  # Set to True for testnet
-})
+# === MULTI-REGION DEPLOYMENT SUPPORT ===
+import os
+
+
+# Check if we're running in a restricted region
+def check_region_access():
+    """Test if we can access Binance from current region"""
+    try:
+        test_exchange = ccxt.binance({'enableRateLimit': True})
+        test_exchange.fetch_ticker('BTC/USDT')
+        return True, "Direct access available"
+    except Exception as e:
+        if "451" in str(e) or "restricted location" in str(e):
+            return False, "Region restricted"
+        else:
+            return False, f"Connection error: {str(e)[:100]}"
+
+
+# === EXCHANGE FALLBACK SYSTEM ===
+def initialize_best_exchange():
+    """Try exchanges in order of preference and regional availability"""
+
+    exchange_options = [
+        {
+            'name': 'Binance',
+            'init_spot': lambda: ccxt.binance({'enableRateLimit': True}),
+            'init_futures': lambda: ccxt.binance({'enableRateLimit': True, 'options': {'defaultType': 'future'}}),
+            'spot_symbol': 'BTC/USDT',
+            'futures_symbol': 'BTC/USDT:USDT',
+            'funding_support': True
+        },
+        {
+            'name': 'Bybit',
+            'init_spot': lambda: ccxt.bybit({'enableRateLimit': True}),
+            'init_futures': lambda: ccxt.bybit({'enableRateLimit': True, 'options': {'defaultType': 'linear'}}),
+            'spot_symbol': 'BTC/USDT',
+            'futures_symbol': 'BTC/USDT:USDT',
+            'funding_support': True
+        },
+        {
+            'name': 'OKX',
+            'init_spot': lambda: ccxt.okx({'enableRateLimit': True}),
+            'init_futures': lambda: ccxt.okx({'enableRateLimit': True, 'options': {'defaultType': 'swap'}}),
+            'spot_symbol': 'BTC/USDT',
+            'futures_symbol': 'BTC-USDT-SWAP',
+            'funding_support': True
+        },
+        {
+            'name': 'Coinbase',
+            'init_spot': lambda: ccxt.coinbase({'enableRateLimit': True}),
+            'init_futures': None,  # Coinbase doesn't have futures
+            'spot_symbol': 'BTC/USD',
+            'futures_symbol': None,
+            'funding_support': False
+        }
+    ]
+
+    for exchange_config in exchange_options:
+        try:
+            st.info(f"🔄 Trying {exchange_config['name']}...")
+
+            # Initialize spot exchange
+            spot_exchange = exchange_config['init_spot']()
+            spot_price = spot_exchange.fetch_ticker(exchange_config['spot_symbol'])['last']
+
+            # Initialize futures exchange if available
+            futures_exchange = None
+            futures_symbol = None
+            if exchange_config['init_futures'] and exchange_config['futures_symbol']:
+                futures_exchange = exchange_config['init_futures']()
+                futures_price = futures_exchange.fetch_ticker(exchange_config['futures_symbol'])['last']
+                futures_symbol = exchange_config['futures_symbol']
+
+            st.success(f"✅ {exchange_config['name']} connected successfully!")
+
+            return {
+                'name': exchange_config['name'],
+                'spot_exchange': spot_exchange,
+                'futures_exchange': futures_exchange,
+                'spot_symbol': exchange_config['spot_symbol'],
+                'futures_symbol': futures_symbol,
+                'funding_support': exchange_config['funding_support']
+            }
+
+        except Exception as e:
+            error_msg = str(e)
+            if "451" in error_msg or "restricted" in error_msg:
+                st.warning(f"❌ {exchange_config['name']}: Region restricted")
+            else:
+                st.warning(f"❌ {exchange_config['name']}: {error_msg[:100]}...")
+            continue
+
+    st.error("❌ No exchanges available!")
+    return None
+
 
 # === Streamlit Layout ===
-st.set_page_config(page_title="BTC Spread Monitor", layout="centered")
-st.title("📊 Binance BTC Spot vs Futures Spread Monitor")
-st.write("Real-time price monitoring and funding arbitrage signal")
+st.set_page_config(page_title="Multi-Exchange BTC Monitor", layout="centered")
+st.title("📊 Multi-Exchange BTC Spread Monitor")
+st.write("Automatic exchange selection based on regional availability")
+
+# === Initialize best available exchange ===
+with st.spinner("🔍 Finding best available exchange..."):
+    active_exchange = initialize_best_exchange()
+
+if not active_exchange:
+    st.error("❌ No exchanges accessible from this region")
+
+    # Show deployment recommendations
+    st.subheader("🌍 Deployment Recommendations")
+    st.info("**Option 1: Deploy to different regions**")
+    st.write("• **Railway**: Supports multiple regions")
+    st.write("• **DigitalOcean**: Choose Singapore/EU regions")
+    st.write("• **AWS/GCP**: Deploy in Asia/Europe")
+
+    st.info("**Option 2: Use API-friendly proxy services**")
+    st.write("• **Smartproxy** ($12.5/month) - Good for APIs")
+    st.write("• **ProxyMesh** ($10/month) - Reliable for trading")
+    st.write("• **Bright Data** ($500/month) - Enterprise grade")
+
+    st.stop()
+
+# Display active exchange info
+st.success(f"🚀 Using: **{active_exchange['name']}**")
+if not active_exchange['futures_exchange']:
+    st.warning("⚠️ Futures trading not available on this exchange - showing spot prices only")
 
 # Initialize placeholders (only once)
 spot_price_display = st.empty()
@@ -35,33 +149,52 @@ history_display = st.empty()
 funding_history_display = st.empty()
 update_time_display = st.empty()
 
-# Track price spread history
+# Track price spread history (keep only latest 5)
 history = pd.DataFrame(columns=["Timestamp", "Spot", "Futures", "Spread"])
 funding_history = pd.DataFrame(columns=["Timestamp", "Funding_Rate"])
 
-# === Main Loop ===
+# === Streamlit Layout ===
+# st.set_page_config(page_title="BTC Spread Monitor", layout="centered")
+# st.title("📊 Binance BTC Spot vs Futures Spread Monitor")
+# st.write("Real-time price monitoring and funding arbitrage signal")
+st.set_page_config(page_title="Multi-Exchange BTC Monitor", layout="centered")
+st.title("📊 Multi-Exchange BTC Spread Monitor")
+st.write("Automatic exchange selection based on regional availability")
+
+
+# Initialize placeholders (only once)
+spot_price_display = st.empty()
+futures_price_display = st.empty()
+spread_display = st.empty()
+alert_display = st.empty()
+chart_placeholder = st.empty()
+funding_display = st.empty()
+funding_status_display = st.empty()
+history_display = st.empty()
+funding_history_display = st.empty()
+update_time_display = st.empty()
+
 while True:
     try:
-        # Fetch prices
-        spot_price = binance_spot.fetch_ticker(SPOT_SYMBOL)['last']
-        futures_price = binance_futures.fetch_ticker(FUTURES_SYMBOL)['last']
-        spread = futures_price - spot_price
+        # Fetch prices from active exchange
+        spot_price = active_exchange['spot_exchange'].fetch_ticker(active_exchange['spot_symbol'])['last']
+        # Handle futures price (if available)
+        futures_price = None
+        spread = None
+        if active_exchange['futures_exchange'] and active_exchange['futures_symbol']:
+            futures_price = active_exchange['futures_exchange'].fetch_ticker(active_exchange['futures_symbol'])['last']
+            spread = futures_price - spot_price
+
         timestamp = pd.Timestamp.now()
 
-        # Fetch funding rate using correct ccxt method
-        try:
-            # Method 1: Using ccxt's built-in funding rate fetch
-            funding_info = binance_futures.fetch_funding_rate(FUTURES_SYMBOL)
-            funding_rate = funding_info['fundingRate']
-        except Exception as funding_error:
+        # Fetch funding rate (if supported)
+        funding_rate = None
+        if active_exchange['funding_support'] and active_exchange['futures_exchange']:
             try:
-                # Method 2: Direct API call with correct method name
-                funding_info = binance_futures.fapiPublicGetPremiumIndex({'symbol': 'BTCUSDT'})
-                funding_rate = float(funding_info['lastFundingRate'])
-            except Exception as backup_error:
-                # Method 3: Set to None if both methods fail
+                funding_info = active_exchange['futures_exchange'].fetch_funding_rate(active_exchange['futures_symbol'])
+                funding_rate = funding_info['fundingRate']
+            except Exception as funding_error:
                 st.warning(f"Could not fetch funding rate: {funding_error}")
-                funding_rate = None
 
         # Display funding rate if available
         if funding_rate is not None:
@@ -83,7 +216,7 @@ while True:
             funding_display.metric("Funding Rate", "N/A")
             funding_status_display.empty()
 
-        # Log values
+        # Log values (keep only latest 5 for display)
         new_row = pd.DataFrame([[timestamp, spot_price, futures_price, spread]],
                                columns=history.columns)
         history = pd.concat([history, new_row], ignore_index=True).tail(5)
@@ -91,7 +224,7 @@ while True:
         # Log funding rate (only keep latest 5)
         if funding_rate is not None:
             funding_row = pd.DataFrame([[timestamp, funding_rate]],
-                                     columns=funding_history.columns)
+                                       columns=funding_history.columns)
             funding_history = pd.concat([funding_history, funding_row], ignore_index=True).tail(5)
 
         # Display metrics
@@ -111,17 +244,18 @@ while True:
         if len(history) > 1:
             chart_placeholder.line_chart(history.set_index("Timestamp")[["Spread"]])
 
-        # Display latest 5 history entries
+        # Display latest 5 history entries (simple approach)
         if len(history) > 0:
             with history_display.container():
                 st.subheader("📋 Latest 5 Price Updates")
-                display_history = history.tail(5).copy()
+                display_history = history.copy()
                 display_history['Timestamp'] = display_history['Timestamp'].dt.strftime('%H:%M:%S')
                 display_history['Spot'] = display_history['Spot'].apply(lambda x: f"${x:,.2f}")
                 display_history['Futures'] = display_history['Futures'].apply(lambda x: f"${x:,.2f}")
                 display_history['Spread'] = display_history['Spread'].apply(lambda x: f"${x:,.2f}")
                 st.dataframe(display_history.iloc[::-1], use_container_width=True, hide_index=True)
 
+        # Display latest 5 funding rate updates (simple approach)
         if len(funding_history) > 0:
             with funding_history_display.container():
                 st.subheader("💰 Latest 5 Funding Rate Updates")
@@ -130,10 +264,25 @@ while True:
                 display_funding['Funding_Rate'] = display_funding['Funding_Rate'].apply(lambda x: f"{x * 100:.5f}%")
                 st.dataframe(display_funding.iloc[::-1], use_container_width=True, hide_index=True)
 
-        # Refresh note
+        # Refresh note (using placeholder to prevent stacking)
         update_time_display.caption(f"Updated at: {timestamp} (every {REFRESH_INTERVAL}s)")
         time.sleep(REFRESH_INTERVAL)
 
     except Exception as e:
-        st.error(f"Error fetching data: {e}")
+        error_msg = str(e)
+        if "451" in error_msg or "restricted location" in error_msg:
+            st.error("🚫 **Geographic Restriction Detected!**")
+            st.error("Current exchange is not available in this region.")
+
+            # Try to find alternative exchange
+            st.info("🔄 Attempting to find alternative exchange...")
+            new_exchange = initialize_best_exchange()
+            if new_exchange:
+                active_exchange = new_exchange
+                st.success(f"✅ Switched to {active_exchange['name']}")
+            else:
+                st.error("❌ No alternative exchanges available")
+        else:
+            st.error(f"Error fetching data from {active_exchange['name']}: {e}")
+
         time.sleep(REFRESH_INTERVAL)
