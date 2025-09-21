@@ -157,9 +157,9 @@ funding_history = pd.DataFrame(columns=["Timestamp", "Funding_Rate"])
 # st.set_page_config(page_title="BTC Spread Monitor", layout="centered")
 # st.title("📊 Binance BTC Spot vs Futures Spread Monitor")
 # st.write("Real-time price monitoring and funding arbitrage signal")
-st.set_page_config(page_title="Multi-Exchange BTC Monitor", layout="centered")
-st.title("📊 Multi-Exchange BTC Spread Monitor")
-st.write("Automatic exchange selection based on regional availability")
+# st.set_page_config(page_title="Multi-Exchange BTC Monitor", layout="centered")
+# st.title("📊 Multi-Exchange BTC Spread Monitor")
+# st.write("Automatic exchange selection based on regional availability")
 
 
 # Initialize placeholders (only once)
